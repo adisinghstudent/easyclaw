@@ -1,439 +1,502 @@
 ---
 name: openclaw-config
 description: Manage OpenClaw bot configuration - channels, agents, security, and autopilot settings
-version: 1.0.0
+version: 2.0.0
 ---
 
-# OpenClaw Configuration Manager
+# OpenClaw Configuration & Debugging
 
-Expert tool for configuring and managing OpenClaw bot settings - channels (Signal, Telegram, WhatsApp, iMessage), agent behavior, security policies, and autopilot modes.
+Fast reference for managing, debugging, and searching everything in `~/.openclaw`.
 
-## Commands
+---
 
-### `/openclaw-config status`
-Show current configuration overview and channel status
+## File Map
 
-### `/openclaw-config channel <channel> [options]`
-Configure a specific channel (signal, telegram, whatsapp, imessage)
+```
+~/.openclaw/
+├── openclaw.json                    # MAIN CONFIG (channels, auth, gateway, plugins, skills)
+├── openclaw.json.bak                # Auto-backups (.bak, .bak.1, .bak.2 ...)
+├── exec-approvals.json              # Execution approval socket + defaults
+│
+├── agents/main/
+│   ├── agent/auth-profiles.json     # Auth tokens per provider
+│   └── sessions/
+│       ├── sessions.json            # SESSION INDEX — start here to find any session
+│       └── *.jsonl                  # Session transcripts (one JSON object per line)
+│
+├── workspace/                       # Agent workspace (git-tracked)
+│   ├── SOUL.md                      # Personality & writing style
+│   ├── IDENTITY.md                  # Name, creature, vibe
+│   ├── USER.md                      # Owner context
+│   ├── AGENTS.md                    # Session behavior rules
+│   ├── BOOT.md                      # Boot-time instructions (autopilot protocol)
+│   ├── HEARTBEAT.md                 # Heartbeat task checklist
+│   ├── MEMORY.md                    # Long-term curated memory
+│   ├── TOOLS.md                     # Local tool notes (contacts, SSH, etc.)
+│   ├── memory/                      # Daily logs: YYYY-MM-DD.md
+│   └── skills/                      # Workspace-level skills
+│
+├── memory/main.sqlite               # Persistent memory database
+│
+├── logs/
+│   ├── gateway.log                  # Runtime events (startup, reload, pairing)
+│   ├── gateway.err.log              # Errors and stack traces
+│   └── commands.log                 # Command execution log
+│
+├── cron/
+│   ├── jobs.json                    # Scheduled job definitions
+│   └── runs/                        # Per-job run logs (JSONL by job UUID)
+│
+├── credentials/
+│   ├── whatsapp/default/            # WA pre-keys, sessions, lid-mapping
+│   ├── telegram/{botname}/token.txt # Bot tokens
+│   └── bird/cookies.json            # X/Twitter auth cookies
+│
+├── extensions/                      # Custom plugins (TypeScript)
+│   └── {name}/
+│       ├── openclaw.plugin.json     # Plugin manifest
+│       ├── index.ts                 # Entry point
+│       └── src/                     # Source files
+│
+├── identity/
+│   ├── device.json                  # Device config
+│   └── device-auth.json             # Device auth keys
+│
+├── devices/
+│   ├── paired.json                  # Connected devices
+│   └── pending.json                 # Pending pairing requests
+│
+├── media/
+│   ├── inbound/                     # Received files (images, audio)
+│   └── browser/                     # Browser screenshots
+│
+├── browser/openclaw/user-data/      # Chromium profile
+├── tools/signal-cli/                # Signal CLI binary
+├── subagents/runs.json              # Sub-agent execution log
+├── canvas/index.html                # Web canvas UI
+└── telegram/update-offset-*.json    # Telegram message offsets
+```
 
-**Options:**
-- `--enable` / `--disable` - Enable or disable channel
-- `--policy <open|allowlist|pairing|disabled>` - Set DM policy
-- `--allow <number>` - Add number to allowlist
-- `--remove <number>` - Remove number from allowlist
-- `--autopilot` - Enable autopilot mode (bot responds as you)
-- `--manual` - Disable autopilot mode
+---
 
-### `/openclaw-config agent [options]`
-Configure agent behavior and models
+## Quick Debug Commands
 
-**Options:**
-- `--model <opus|sonnet|haiku>` - Set default model
-- `--concurrency <number>` - Set max concurrent requests
-- `--workspace <path>` - Set workspace directory
+### Search Sessions for Keywords
 
-### `/openclaw-config security`
-Review and configure security settings
+```bash
+# Find which sessions mention something (fast — searches filenames in index)
+grep -l "KEYWORD" ~/.openclaw/agents/main/sessions/*.jsonl
 
-### `/openclaw-config notify <channel> <target>`
-Set up cross-channel notifications (e.g., WhatsApp → Signal alerts)
+# Search session content for actual message text
+grep "KEYWORD" ~/.openclaw/agents/main/sessions/*.jsonl | head -20
 
-## How It Works
+# Search with context (2 lines around match)
+grep -C2 "KEYWORD" ~/.openclaw/agents/main/sessions/*.jsonl | head -40
 
-1. **Reads** `~/.openclaw/openclaw.json`
-2. **Validates** changes against OpenClaw schema
-3. **Applies** updates safely
-4. **Restarts** gateway to activate changes
-5. **Verifies** channels are running
+# Find sessions by channel (signal, whatsapp, telegram)
+cat ~/.openclaw/agents/main/sessions/sessions.json | jq -r 'to_entries[] | select(.value.lastChannel == "signal") | "\(.value.sessionId) | \(.value.origin.label // "unknown") | \(.value.updatedAt | . / 1000 | todate)"'
 
-## Key Configuration Patterns
+# Find sessions by contact name/number
+cat ~/.openclaw/agents/main/sessions/sessions.json | jq -r 'to_entries[] | select(.value.origin.label // "" | test("KEYWORD"; "i")) | "\(.value.sessionId) | \(.value.origin.label) | \(.value.lastChannel)"'
+
+# Most recent sessions (by last update)
+cat ~/.openclaw/agents/main/sessions/sessions.json | jq -r '[to_entries[] | {key: .key, id: .value.sessionId, updated: .value.updatedAt, label: (.value.origin.label // .key), channel: (.value.lastChannel // "?")}] | sort_by(.updated) | reverse | .[:10][] | "\(.updated | . / 1000 | todate) | \(.channel) | \(.label)"'
+
+# Read a specific session transcript (last 30 messages)
+tail -30 ~/.openclaw/agents/main/sessions/SESSION_ID.jsonl | python3 -c "
+import sys, json
+for line in sys.stdin:
+    obj = json.loads(line)
+    if obj.get('type') == 'message':
+        role = obj['message']['role']
+        text = ''.join(c.get('text','') for c in obj['message'].get('content',[]) if isinstance(c,dict))
+        if text.strip():
+            print(f'[{role}] {text[:200]}')
+"
+```
+
+### Check Logs
+
+```bash
+# Recent gateway events (last 30 lines)
+tail -30 ~/.openclaw/logs/gateway.log
+
+# Recent errors
+tail -50 ~/.openclaw/logs/gateway.err.log
+
+# Follow logs live
+tail -f ~/.openclaw/logs/gateway.log
+
+# Search errors for a specific channel
+grep -i "signal\|whatsapp\|telegram" ~/.openclaw/logs/gateway.err.log | tail -20
+
+# Count errors by type
+grep -oP 'Error: [^"]+' ~/.openclaw/logs/gateway.err.log | sort | uniq -c | sort -rn | head -10
+```
+
+### Cron Jobs
+
+```bash
+# List all jobs with status
+cat ~/.openclaw/cron/jobs.json | jq '.jobs[] | {name, enabled, status: .state.lastStatus, error: .state.lastError, id}'
+
+# Check failed jobs
+cat ~/.openclaw/cron/jobs.json | jq '.jobs[] | select(.state.lastStatus == "error") | {name, error: .state.lastError}'
+
+# View run history for a specific job
+tail -5 ~/.openclaw/cron/runs/JOB_UUID.jsonl
+
+# See next scheduled run times
+cat ~/.openclaw/cron/jobs.json | jq '.jobs[] | select(.enabled) | {name, nextRun: (.state.nextRunAtMs // 0 | . / 1000 | todate)}'
+```
+
+### Memory Database
+
+```bash
+# List tables in memory DB
+sqlite3 ~/.openclaw/memory/main.sqlite ".tables"
+
+# Show table schemas
+sqlite3 ~/.openclaw/memory/main.sqlite ".schema"
+
+# Search memory for a keyword
+sqlite3 ~/.openclaw/memory/main.sqlite "SELECT * FROM memories WHERE content LIKE '%KEYWORD%' ORDER BY created_at DESC LIMIT 10;"
+
+# Count memories
+sqlite3 ~/.openclaw/memory/main.sqlite "SELECT COUNT(*) FROM memories;"
+
+# Recent memories
+sqlite3 ~/.openclaw/memory/main.sqlite "SELECT substr(content, 1, 100), created_at FROM memories ORDER BY created_at DESC LIMIT 10;"
+```
+
+### Channel Status
+
+```bash
+# Quick channel overview from config
+cat ~/.openclaw/openclaw.json | jq '{
+  whatsapp: {policy: .channels.whatsapp.dmPolicy, selfChat: .channels.whatsapp.selfChatMode},
+  signal: {enabled: .channels.signal.enabled, policy: .channels.signal.dmPolicy, account: .channels.signal.account},
+  telegram: {enabled: .channels.telegram.enabled, policy: .channels.telegram.dmPolicy, bots: (.channels.telegram.accounts | keys)},
+  imessage: {enabled: .channels.imessage.enabled}
+}'
+
+# Which plugins are enabled
+cat ~/.openclaw/openclaw.json | jq '.plugins.entries'
+
+# Check gateway binding
+cat ~/.openclaw/openclaw.json | jq '{port: .gateway.port, bind: .gateway.bind, mode: .gateway.mode}'
+```
+
+### Extensions
+
+```bash
+# List installed extensions
+ls ~/.openclaw/extensions/
+
+# View extension manifest
+cat ~/.openclaw/extensions/*/openclaw.plugin.json | jq .
+
+# Check extension source files
+find ~/.openclaw/extensions/ -name "*.ts" -not -path "*/node_modules/*"
+```
+
+### Credentials Health Check
+
+```bash
+# WhatsApp — check session files exist
+ls ~/.openclaw/credentials/whatsapp/default/ 2>/dev/null | head -5
+
+# Telegram — verify bot tokens exist (don't print them)
+for d in ~/.openclaw/credentials/telegram/*/; do
+  bot=$(basename "$d")
+  [ -f "$d/token.txt" ] && echo "$bot: OK" || echo "$bot: MISSING"
+done
+
+# Twitter/Bird — check cookies exist
+[ -f ~/.openclaw/credentials/bird/cookies.json ] && echo "Bird cookies: OK" || echo "Bird cookies: MISSING"
+
+# Signal — verify CLI exists
+[ -x "$(cat ~/.openclaw/openclaw.json | jq -r '.channels.signal.cliPath')" ] && echo "signal-cli: OK" || echo "signal-cli: MISSING or not executable"
+```
+
+### Devices
+
+```bash
+# Paired devices
+cat ~/.openclaw/devices/paired.json | jq .
+
+# Pending pairing requests
+cat ~/.openclaw/devices/pending.json | jq .
+```
+
+---
+
+## Config Editing
+
+### openclaw.json Structure
+
+| Section | What It Controls |
+|---|---|
+| `meta` | Version tracking, last-touched timestamps |
+| `wizard` | Last setup wizard run info |
+| `browser` | Chromium browser profile (enabled, profile name) |
+| `auth.profiles` | API provider auth tokens (anthropic, etc.) |
+| `agents.defaults` | Model, workspace path, concurrency, compaction |
+| `tools.web.search` | Brave search API config |
+| `tools.message` | Cross-context messaging settings |
+| `messages` | Ack reaction scope |
+| `commands` | Native command / skill modes |
+| `hooks.internal` | Internal hooks (boot-md, etc.) |
+| `channels.*` | Per-channel config (dmPolicy, allowFrom, groupPolicy) |
+| `gateway` | Port, bind, auth token, tailscale |
+| `skills.entries` | Skill-specific API keys and settings |
+| `plugins.entries` | Enable/disable each channel plugin |
 
 ### Channel Security Modes
 
-**Open Mode** (⚠️ High Risk):
-```json
-{
-  "dmPolicy": "open",
-  "allowFrom": ["*"]
-}
-```
-Anyone can message, no restrictions.
+| Mode | Behavior | Risk |
+|---|---|---|
+| `open` | Anyone can message, no restrictions | HIGH — anyone sends, you pay API |
+| `allowlist` | Only listed numbers/IDs get through | LOW — explicit control |
+| `pairing` | Unknown senders get a code, you approve | LOW — approval required |
+| `disabled` | Channel off | NONE |
 
-**Allowlist Mode** (Recommended):
-```json
-{
-  "dmPolicy": "allowlist",
-  "allowFrom": ["+14155551234"]
-}
-```
-Only specific numbers can message.
-
-**Pairing Mode** (Secure):
-```json
-{
-  "dmPolicy": "pairing"
-}
-```
-Unknown senders get a code, you approve via `openclaw pairing approve`.
-
-### WhatsApp Autopilot Setup
-
-**Autopilot Mode** - Bot responds as you to everyone:
-```json
-{
-  "whatsapp": {
-    "dmPolicy": "open",
-    "selfChatMode": false,
-    "allowFrom": ["*"]
-  }
-}
-```
-
-**Manual Mode** - You control responses:
-```json
-{
-  "whatsapp": {
-    "dmPolicy": "allowlist",
-    "selfChatMode": true,
-    "allowFrom": ["+14155551234"]
-  }
-}
-```
-
-### Multi-Bot Telegram Setup
-
-```json
-{
-  "telegram": {
-    "enabled": true,
-    "accounts": {
-      "coder": {
-        "name": "Coding Assistant",
-        "enabled": true,
-        "botToken": "your-bot-token"
-      },
-      "sales": {
-        "name": "Sales Bot",
-        "enabled": true,
-        "botToken": "another-bot-token"
-      }
-    },
-    "dmPolicy": "pairing"
-  }
-}
-```
-
-### Signal as Mission Control
-
-```json
-{
-  "signal": {
-    "enabled": true,
-    "account": "+12345678901",
-    "cliPath": "/opt/homebrew/bin/signal-cli",
-    "dmPolicy": "allowlist",
-    "allowFrom": ["+14155551234"]
-  }
-}
-```
-
-### Agent Performance Tuning
-
-```json
-{
-  "agents": {
-    "defaults": {
-      "maxConcurrent": 20,
-      "subagents": {
-        "maxConcurrent": 20
-      }
-    }
-  }
-}
-```
-
-## Common Workflows
-
-### Setup: Lock Down All Channels
+### Edit Config Safely
 
 ```bash
-/openclaw-config channel signal --policy allowlist --allow +14155551234
-/openclaw-config channel telegram --policy pairing
-/openclaw-config channel whatsapp --policy allowlist --allow +14155551234
-/openclaw-config channel imessage --disable
-```
+# 1. Always backup first
+cp ~/.openclaw/openclaw.json ~/.openclaw/openclaw.json.bak.manual
 
-### Setup: WhatsApp Autopilot + Signal Notifications
+# 2. Edit with jq (example: switch WhatsApp to allowlist)
+cat ~/.openclaw/openclaw.json | jq '.channels.whatsapp.dmPolicy = "allowlist" | .channels.whatsapp.allowFrom = ["+1XXXXXXXXXX"]' > /tmp/oc.json && mv /tmp/oc.json ~/.openclaw/openclaw.json
 
-1. Enable WhatsApp autopilot (bot responds as you)
-2. Lock Signal to only you
-3. Configure BOOT.md to notify Signal of all WhatsApp activity
-
-```bash
-/openclaw-config channel whatsapp --autopilot --policy open
-/openclaw-config channel signal --policy allowlist --allow +14155551234
-/openclaw-config notify whatsapp signal
-```
-
-### Setup: Multiple Telegram Bots for Team
-
-```bash
-/openclaw-config channel telegram --add-bot coder "Coding Bot" <token>
-/openclaw-config channel telegram --add-bot sales "Sales Bot" <token>
-/openclaw-config channel telegram --policy pairing
-```
-
-### Performance: Enable Multitasking
-
-```bash
-/openclaw-config agent --concurrency 20
-```
-
-## Safety Features
-
-### Pre-Flight Checks
-- Validates JSON syntax before applying
-- Checks for required fields
-- Warns about security implications
-
-### Backup Strategy
-- Creates timestamped backup before changes
-- Stored in `~/.openclaw/backups/`
-- Rollback with `/openclaw-config restore <timestamp>`
-
-### Dangerous Action Warnings
-
-Warns before enabling:
-- WhatsApp autopilot (bot speaks for you)
-- Open mode (anyone can message)
-- Disabling security features
-
-## Files Modified
-
-- `~/.openclaw/openclaw.json` - Main config
-- `~/.openclaw/workspace/BOOT.md` - Bot instructions (for notifications)
-- `~/.openclaw/credentials/<channel>/` - Channel credentials
-
-## Implementation
-
-```python
-import json
-import subprocess
-from pathlib import Path
-from datetime import datetime
-
-CONFIG_PATH = Path.home() / '.openclaw' / 'openclaw.json'
-BACKUP_DIR = Path.home() / '.openclaw' / 'backups'
-
-def read_config():
-    """Read and parse openclaw.json"""
-    with open(CONFIG_PATH) as f:
-        return json.load(f)
-
-def write_config(config, backup=True):
-    """Write config with automatic backup"""
-    if backup:
-        BACKUP_DIR.mkdir(exist_ok=True)
-        timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
-        backup_path = BACKUP_DIR / f'openclaw.json.{timestamp}'
-        subprocess.run(['cp', CONFIG_PATH, backup_path])
-
-    with open(CONFIG_PATH, 'w') as f:
-        json.dump(config, f, indent=2)
-
-def restart_gateway():
-    """Restart OpenClaw gateway"""
-    subprocess.run(['openclaw', 'gateway', 'restart'])
-
-def validate_config(config):
-    """Validate config against OpenClaw schema"""
-    # Write temp file and test with openclaw doctor
-    temp = Path('/tmp/openclaw-test.json')
-    with open(temp, 'w') as f:
-        json.dump(config, f, indent=2)
-
-    result = subprocess.run(
-        ['openclaw', 'doctor', '--config', str(temp)],
-        capture_output=True,
-        text=True
-    )
-    return result.returncode == 0, result.stderr
-
-def set_channel_policy(channel, policy, allow_from=None):
-    """Set channel DM policy"""
-    config = read_config()
-
-    if channel not in config['channels']:
-        config['channels'][channel] = {'enabled': True}
-
-    config['channels'][channel]['dmPolicy'] = policy
-
-    if allow_from:
-        config['channels'][channel]['allowFrom'] = (
-            ['*'] if allow_from == '*' else allow_from
-        )
-
-    valid, error = validate_config(config)
-    if not valid:
-        raise ValueError(f"Invalid config: {error}")
-
-    write_config(config)
-    restart_gateway()
-    return f"✅ {channel} policy set to {policy}"
-
-def enable_autopilot(channel='whatsapp'):
-    """Enable autopilot mode on a channel"""
-    config = read_config()
-
-    config['channels'][channel].update({
-        'dmPolicy': 'open',
-        'selfChatMode': False,
-        'allowFrom': ['*'],
-        'groupPolicy': 'disabled'
-    })
-
-    write_config(config)
-    restart_gateway()
-
-    return f"""
-⚠️ AUTOPILOT ENABLED on {channel}!
-Bot will now respond AS YOU to all messages.
-Monitor Signal for notifications of all activity.
-"""
-```
-
-## Examples
-
-### Check Current Setup
-```
-/openclaw-config status
-```
-
-Output:
-```
-📱 OpenClaw Status:
-
-Channels:
-✅ Signal (+12345678901) - allowlist (only +14155551234)
-✅ Telegram coder - pairing mode
-✅ Telegram sales - pairing mode
-✅ WhatsApp - AUTOPILOT (open to everyone ⚠️)
-❌ iMessage - disabled
-
-Agent:
-Model: claude-opus-4-5
-Concurrency: 20/20
-Workspace: ~/.openclaw/workspace
-
-Security:
-⚠️ WhatsApp autopilot active - bot speaks for you!
-✅ Signal locked to owner only
-✅ Telegram requires pairing approval
-```
-
-### Add Telegram Bot
-```
-/openclaw-config channel telegram --add-bot worker "Worker Bot" 123456:ABC-token
-```
-
-### Lock Down Everything
-```
-/openclaw-config security --lock-all
-```
-
-Applies:
-- All channels → pairing mode
-- iMessage → disabled
-- Signal → allowlist (owner only)
-- Telegram → pairing
-
-## Troubleshooting
-
-**Config invalid after change:**
-```bash
-# Restore from backup
-/openclaw-config restore latest
-
-# Or manually
-cp ~/.openclaw/backups/openclaw.json.20260131_120000 ~/.openclaw/openclaw.json
+# 3. Restart gateway to apply
 openclaw gateway restart
 ```
 
-**Channel not starting:**
+### Common Config Changes
+
+**Switch WhatsApp to allowlist:**
 ```bash
-# Check logs
-openclaw logs --follow | grep <channel>
-
-# Verify credentials
-ls ~/.openclaw/credentials/<channel>/
-
-# Run doctor
-openclaw doctor
+jq '.channels.whatsapp.dmPolicy = "allowlist" | .channels.whatsapp.allowFrom = ["+1XXXXXXXXXX"]' ~/.openclaw/openclaw.json > /tmp/oc.json && mv /tmp/oc.json ~/.openclaw/openclaw.json
 ```
 
-**Permission denied (iMessage):**
-- Grant Full Disk Access to Ghostty/Terminal
-- System Settings → Privacy & Security → Full Disk Access
-
-## Security Warnings
-
-### ⚠️ AUTOPILOT MODE RISKS
-
-When enabling WhatsApp/Telegram autopilot:
-- Bot responds AS YOU to everyone
-- Family, friends, work contacts
-- Can damage relationships if bot misbehaves
-- ALWAYS monitor Signal notifications
-
-### ⚠️ OPEN MODE RISKS
-
-`dmPolicy: "open"` means:
-- Anyone can message your bot
-- No verification required
-- Could be spammed or abused
-- Bot costs = your API bills
-
-### ✅ RECOMMENDED SETUP
-
-For personal use:
-- Signal: allowlist (owner only) - Your control center
-- Telegram: pairing mode - Approve each user
-- WhatsApp: autopilot + Signal notifications - Monitored automation
-- iMessage: disabled - Privacy protection
-
-## Advanced: Cross-Channel Notifications
-
-Set up BOOT.md to automatically notify Signal when WhatsApp gets messages:
-
-```markdown
-# BOOT.md
-
-## WhatsApp → Signal Notification Protocol
-
-When you respond to WhatsApp, ALWAYS send notification to Signal:
-
-Format:
-📱 WhatsApp Activity:
-From: [Name/Number]
-Said: "[message]"
-I replied: "[response]"
-
-Use message tool:
-- Channel: signal
-- To: +12345678901
-- Message: [formatted notification]
+**Enable autopilot (WhatsApp open + BOOT.md notification protocol):**
+```bash
+jq '.channels.whatsapp += {dmPolicy: "open", selfChatMode: false, allowFrom: ["*"]}' ~/.openclaw/openclaw.json > /tmp/oc.json && mv /tmp/oc.json ~/.openclaw/openclaw.json
 ```
 
-This keeps you informed of all autopilot activity in real-time.
+**Add a number to Signal allowlist:**
+```bash
+jq '.channels.signal.allowFrom += ["+1XXXXXXXXXX"]' ~/.openclaw/openclaw.json > /tmp/oc.json && mv /tmp/oc.json ~/.openclaw/openclaw.json
+```
 
-## Related Commands
+**Change default model:**
+```bash
+jq '.agents.defaults.models = {"anthropic/claude-sonnet-4": {"alias": "sonnet"}}' ~/.openclaw/openclaw.json > /tmp/oc.json && mv /tmp/oc.json ~/.openclaw/openclaw.json
+```
 
-- `openclaw channels status` - View all channel statuses
-- `openclaw pairing list <channel>` - See pending pairing requests
-- `openclaw pairing approve <channel> <code>` - Approve pairing
-- `openclaw gateway restart` - Restart gateway
-- `openclaw doctor` - Health check and fixes
-- `openclaw logs --follow` - Live logs
+**Set concurrency:**
+```bash
+jq '.agents.defaults.maxConcurrent = 10 | .agents.defaults.subagents.maxConcurrent = 10' ~/.openclaw/openclaw.json > /tmp/oc.json && mv /tmp/oc.json ~/.openclaw/openclaw.json
+```
+
+**Disable a plugin:**
+```bash
+jq '.plugins.entries.imessage.enabled = false' ~/.openclaw/openclaw.json > /tmp/oc.json && mv /tmp/oc.json ~/.openclaw/openclaw.json
+```
+
+---
+
+## Troubleshooting Playbooks
+
+### "Channel not connecting"
+
+```bash
+# 1. Is the plugin enabled?
+cat ~/.openclaw/openclaw.json | jq '.plugins.entries.CHANNEL'
+
+# 2. Is the channel config present?
+cat ~/.openclaw/openclaw.json | jq '.channels.CHANNEL'
+
+# 3. Check credentials exist
+ls -la ~/.openclaw/credentials/CHANNEL/
+
+# 4. Check gateway logs for the channel
+grep -i "CHANNEL" ~/.openclaw/logs/gateway.log | tail -20
+grep -i "CHANNEL" ~/.openclaw/logs/gateway.err.log | tail -20
+
+# 5. Restart and watch
+openclaw gateway restart && tail -f ~/.openclaw/logs/gateway.log
+```
+
+### "Signal RPC Failed to send message"
+
+```bash
+# 1. Check signal-cli is installed and accessible
+which signal-cli || ls -la /opt/homebrew/bin/signal-cli
+
+# 2. Verify the bundled signal-cli
+ls ~/.openclaw/tools/signal-cli/*/signal-cli
+
+# 3. Check the configured account
+cat ~/.openclaw/openclaw.json | jq '.channels.signal'
+
+# 4. Test signal-cli directly
+signal-cli -a +ACCOUNT_NUMBER send -m "test" +TARGET_NUMBER
+
+# 5. Check if daemon is running
+ps aux | grep signal-cli
+
+# 6. Look for RPC errors
+grep -i "signal.*rpc\|signal.*error\|signal.*fail" ~/.openclaw/logs/gateway.err.log | tail -10
+```
+
+### "Cron job failing"
+
+```bash
+# 1. Check which jobs are failing
+cat ~/.openclaw/cron/jobs.json | jq '.jobs[] | select(.state.lastStatus == "error") | {name, id, error: .state.lastError, lastRun: (.state.lastRunAtMs | . / 1000 | todate)}'
+
+# 2. Read the run log for the failing job
+JOB_ID="paste-job-uuid-here"
+tail -20 ~/.openclaw/cron/runs/$JOB_ID.jsonl
+
+# 3. Check if it's a delivery error (channel down) vs task error
+grep "Failed to send\|channel.*error\|delivery" ~/.openclaw/cron/runs/$JOB_ID.jsonl | tail -5
+
+# 4. Manually trigger the job to test
+# (copy the payload.message from jobs.json and send it via the channel)
+```
+
+### "WhatsApp disconnected"
+
+```bash
+# 1. Check WA credential files
+ls -la ~/.openclaw/credentials/whatsapp/default/
+
+# 2. Check for WA errors in logs
+grep -i "whatsapp\|wa\|baileys" ~/.openclaw/logs/gateway.err.log | tail -20
+
+# 3. Check if phone is linked
+grep -i "pair\|link\|qr\|scan" ~/.openclaw/logs/gateway.log | tail -10
+
+# 4. Re-pair if needed
+openclaw configure  # re-run wizard
+```
+
+### "iMessage permission denied"
+
+```bash
+# 1. Check if chat.db is accessible
+ls -la ~/Library/Messages/chat.db
+
+# 2. Terminal needs Full Disk Access
+# System Settings → Privacy & Security → Full Disk Access → add your terminal app
+
+# 3. Check imsg CLI
+which imsg || ls /opt/homebrew/bin/imsg
+
+# 4. Test manually
+imsg chats | head -5
+```
+
+### "Config broken / gateway won't start"
+
+```bash
+# 1. Validate JSON syntax
+python3 -m json.tool ~/.openclaw/openclaw.json > /dev/null && echo "JSON OK" || echo "JSON BROKEN"
+
+# 2. If broken, restore backup
+cp ~/.openclaw/openclaw.json.bak ~/.openclaw/openclaw.json
+
+# 3. If all backups are bad
+ls -lt ~/.openclaw/openclaw.json.bak*  # pick an older one
+
+# 4. Nuclear: re-run wizard
+openclaw configure
+```
+
+### "Can't find what someone said"
+
+```bash
+# Step 1: Search session index for the person
+cat ~/.openclaw/agents/main/sessions/sessions.json | jq -r 'to_entries[] | select(.value.origin.label // "" | test("NAME"; "i")) | "\(.value.sessionId) \(.value.lastChannel) \(.value.origin.label)"'
+
+# Step 2: Search across all sessions for their message
+grep -l "KEYWORD" ~/.openclaw/agents/main/sessions/*.jsonl
+
+# Step 3: Once you have the session ID, read it
+python3 -c "
+import json, sys
+for line in open(sys.argv[1]):
+    obj = json.loads(line)
+    if obj.get('type') == 'message':
+        role = obj['message']['role']
+        text = ''.join(c.get('text','') for c in obj['message'].get('content',[]) if isinstance(c, dict))
+        if text.strip() and 'KEYWORD' in text.lower():
+            ts = obj.get('timestamp','?')
+            print(f'[{ts}] [{role}] {text[:300]}')
+" ~/.openclaw/agents/main/sessions/SESSION_ID.jsonl
+
+# Step 4: Also check workspace memory
+grep -ri "KEYWORD" ~/.openclaw/workspace/memory/
+```
+
+---
+
+## Workspace Files Reference
+
+| File | Purpose | When to Edit |
+|---|---|---|
+| `SOUL.md` | Personality, writing style, boundaries | To change how the bot communicates |
+| `IDENTITY.md` | Name, creature type, emoji, avatar | To rebrand the bot |
+| `USER.md` | Owner info, preferences | When user context changes |
+| `AGENTS.md` | Session behavior, memory rules, safety | To change bot operating rules |
+| `BOOT.md` | Boot-time instructions (autopilot notification protocol) | To change startup behavior |
+| `HEARTBEAT.md` | Periodic task checklist | To add/remove heartbeat checks |
+| `MEMORY.md` | Curated long-term memory | Bot updates this itself |
+| `TOOLS.md` | Local tool notes (contacts, SSH, etc.) | To add contacts, device info |
+| `memory/*.md` | Daily conversation logs | Bot writes these automatically |
+
+---
+
+## Session JSONL Format
+
+Each line is one of these types:
+
+```
+{"type": "session", "id": "...", "timestamp": "...", "cwd": "..."}
+{"type": "message", "id": "...", "message": {"role": "user|assistant", "content": [{"type": "text", "text": "..."}], "model": "...", "usage": {...}}}
+{"type": "custom", "customType": "model-snapshot|openclaw.cache-ttl", "data": {...}}
+```
+
+Key fields in session index (`sessions.json`):
+- `sessionId` — UUID, matches the JSONL filename
+- `lastChannel` — signal, whatsapp, telegram, etc.
+- `origin.label` — human-readable sender label (name + ID)
+- `origin.from` — canonical sender address
+- `updatedAt` — epoch ms of last activity
+- `chatType` — direct, group, etc.
+
+---
+
+## Extension Plugin Format
+
+```
+~/.openclaw/extensions/{name}/
+├── openclaw.plugin.json    # {"id": "name", "channels": ["name"], "configSchema": {...}}
+├── package.json            # Standard npm package
+├── index.ts                # Entry point
+└── src/
+    ├── channel.ts          # Channel implementation
+    ├── actions.ts          # Available actions
+    ├── runtime.ts          # Runtime initialization
+    ├── config-schema.ts    # Configuration schema
+    └── types.ts            # TypeScript types
+```
+
+---
 
 ## License
 
