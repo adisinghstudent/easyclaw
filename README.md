@@ -7,15 +7,15 @@ v2: Rewritten with real file paths, copy-paste debug commands, troubleshooting p
 ## Install
 
 ```bash
-npx add-skill adisinghstudent/openclaw-config
+npx add-skill adisinghstudent/easyclaw
 ```
 
 Or for specific agents:
 
 ```bash
-npx add-skill adisinghstudent/openclaw-config -a claude-code
-npx add-skill adisinghstudent/openclaw-config -a cursor
-npx add-skill adisinghstudent/openclaw-config -a codex
+npx add-skill adisinghstudent/easyclaw -a claude-code
+npx add-skill adisinghstudent/easyclaw -a cursor
+npx add-skill adisinghstudent/easyclaw -a codex
 ```
 
 ## What's Inside
