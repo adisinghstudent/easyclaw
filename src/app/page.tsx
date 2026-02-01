@@ -164,7 +164,7 @@ export default function Home() {
       {/* Growth chart */}
       <section className="py-24 px-6 bg-[var(--color-bg-alt)]">
         <div className="max-w-6xl mx-auto">
-          <div className="grid grid-cols-1 lg:grid-cols-[1fr,380px] gap-12 lg:gap-16 items-center">
+          <div className="grid grid-cols-1 md:grid-cols-[1fr,340px] gap-12 md:gap-16 items-center">
             {/* Left — chart */}
             <div>
               <motion.div
